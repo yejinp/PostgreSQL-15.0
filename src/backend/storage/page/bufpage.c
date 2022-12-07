@@ -190,6 +190,18 @@ PageIsVerifiedExtended(Page page, BlockNumber blkno, int flags)
  *
  *	!!! EREPORT(ERROR) IS DISALLOWED HERE !!!
  */
+/*
+ *
+ PageAddItemExtended 函数：
+   输入：
+     page-指向页的指针
+	 item-指向数据的指针
+	 size-数据大小
+	 offsetNumber-指定数据存储的偏移量
+	 flags-标记位（是否覆盖/是否heap数据）
+  输出:
+     OffsetNumber-数据存储实际的偏移量
+ */
 OffsetNumber
 PageAddItemExtended(Page page,
 					Item item,
@@ -197,17 +209,18 @@ PageAddItemExtended(Page page,
 					OffsetNumber offsetNumber,
 					int flags)
 {
-	PageHeader	phdr = (PageHeader) page;
-	Size		alignedSize;
-	int			lower;
-	int			upper;
-	ItemId		itemId;
-	OffsetNumber limit;
-	bool		needshuffle = false;
+	PageHeader	phdr = (PageHeader) page; //页头指针
+	Size		alignedSize; //对齐大小
+	int			lower;		// Free space低位
+	int			upper;      // Free space高位
+	ItemId		itemId;     // 行指针
+	OffsetNumber limit; 	//行偏移，Free space中第1个可用的位置偏移
+	bool		needshuffle = false;//是否需要移动原有数据
 
 	/*
 	 * Be wary about corrupted page pointers
 	 */
+	//检查页指针是否损坏
 	if (phdr->pd_lower < SizeOfPageHeaderData ||
 		phdr->pd_lower > phdr->pd_upper ||
 		phdr->pd_upper > phdr->pd_special ||
@@ -220,17 +233,21 @@ PageAddItemExtended(Page page,
 	/*
 	 * Select offsetNumber to place the new item at
 	 */
+	// 获取存储数据的偏移（位于lower和upper之间）
 	limit = OffsetNumberNext(PageGetMaxOffsetNumber(page));
 
 	/* was offsetNumber passed in? */
 	if (OffsetNumberIsValid(offsetNumber))
 	{
 		/* yes, check it */
-		if ((flags & PAI_OVERWRITE) != 0)
+		// 如果指定了数据存储的偏移量（也即传入的偏移量参数有效）
+		if ((flags & PAI_OVERWRITE) != 0) //不覆盖原有数据
 		{
 			if (offsetNumber < limit)
 			{
+				// 获取指定偏移的ItemId
 				itemId = PageGetItemId(phdr, offsetNumber);
+				// 指定的数据偏移已使用或者已分配存储空间，报错
 				if (ItemIdIsUsed(itemId) || ItemIdHasStorage(itemId))
 				{
 					elog(WARNING, "will not overwrite a used ItemId");
@@ -238,17 +255,18 @@ PageAddItemExtended(Page page,
 				}
 			}
 		}
-		else
+		else //覆盖原有数据
 		{
+			// 指定的行偏移不在空闲空间中，需要移动原数据为新数据腾空间
 			if (offsetNumber < limit)
 				needshuffle = true; /* need to move existing linp's */
 		}
 	}
-	else
+	else//没有指定数据存储的行偏移
 	{
 		/* offsetNumber was not passed in, so find a free slot */
 		/* if no free slot, we'll put it at limit (1st open slot) */
-		if (PageHasFreeLinePointers(phdr))
+		if (PageHasFreeLinePointers(phdr)) // 页头标记提示存在已回收的空间
 		{
 			/*
 			 * Scan line pointer array to locate a "recyclable" (unused)
@@ -258,6 +276,7 @@ PageAddItemExtended(Page page,
 			 * can only truncate unused items when they appear as a contiguous
 			 * group at the end of the line pointer array.
 			 */
+			//循环找出第1个可用的空闲行偏移
 			for (offsetNumber = FirstOffsetNumber;
 				 offsetNumber < limit;	/* limit is maxoff+1 */
 				 offsetNumber++)
@@ -274,13 +293,14 @@ PageAddItemExtended(Page page,
 				if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
 					break;
 			}
+			//没有找到，说明页头的标记有误，需要清除标记，以免被再次误导
 			if (offsetNumber >= limit)
 			{
 				/* the hint is wrong, so reset it */
 				PageClearHasFreeLinePointers(phdr);
 			}
 		}
-		else
+		else//没有已回收的空间，行指针/数据存储到Free Space中
 		{
 			/* don't bother searching if hint says there's no free slot */
 			offsetNumber = limit;
@@ -290,6 +310,7 @@ PageAddItemExtended(Page page,
 	/* Reject placing items beyond the first unused line pointer */
 	if (offsetNumber > limit)
 	{
+		// 如果指定的偏移大于空闲空间可用的第1个位置，报错
 		elog(WARNING, "specified item offset is too large");
 		return InvalidOffsetNumber;
 	}
@@ -297,6 +318,7 @@ PageAddItemExtended(Page page,
 	/* Reject placing items beyond heap boundary, if heap */
 	if ((flags & PAI_IS_HEAP) != 0 && offsetNumber > MaxHeapTuplesPerPage)
 	{
+		// Heap 数据，但偏移大于一页可以存储的最大Tuple数，报错
 		elog(WARNING, "can't put more than MaxHeapTuplesPerPage items in a heap page");
 		return InvalidOffsetNumber;
 	}
@@ -307,28 +329,30 @@ PageAddItemExtended(Page page,
 	 * Note: do arithmetic as signed ints, to avoid mistakes if, say,
 	 * alignedSize > pd_upper.
 	 */
-	if (offsetNumber == limit || needshuffle)
+	if (offsetNumber == limit || needshuffle)// 如果数据存储在Free Space中，修改lower值
 		lower = phdr->pd_lower + sizeof(ItemIdData);
-	else
+	else//否则，找到了已回收的空闲位置，使用原有的lower
 		lower = phdr->pd_lower;
 
-	alignedSize = MAXALIGN(size);
+	alignedSize = MAXALIGN(size);// 大小对齐，提高性能
 
-	upper = (int) phdr->pd_upper - (int) alignedSize;
+	upper = (int) phdr->pd_upper - (int) alignedSize; //申请存储空间
 
-	if (lower > upper)
+	if (lower > upper)//校验
 		return InvalidOffsetNumber;
 
 	/*
 	 * OK to insert the item.  First, shuffle the existing pointers if needed.
 	 */
+	//获取行指针
 	itemId = PageGetItemId(phdr, offsetNumber);
 
-	if (needshuffle)
+	if (needshuffle)//如果需要腾位置，则把原有的行指针往后挪一 "格"
 		memmove(itemId + 1, itemId,
 				(limit - offsetNumber) * sizeof(ItemIdData));
 
 	/* set the line pointer */
+	// 设置新数据行指针
 	ItemIdSetNormal(itemId, upper, size);
 
 	/*
@@ -346,12 +370,14 @@ PageAddItemExtended(Page page,
 	VALGRIND_CHECK_MEM_IS_DEFINED(item, size);
 
 	/* copy the item's data onto the page */
+	//把数据拷贝到数据区
 	memcpy((char *) page + upper, item, size);
 
 	/* adjust page header */
+	//更新页头的lower和upper
 	phdr->pd_lower = (LocationIndex) lower;
 	phdr->pd_upper = (LocationIndex) upper;
-
+	//插入数据成功，返回实际的行偏移
 	return offsetNumber;
 }
 
