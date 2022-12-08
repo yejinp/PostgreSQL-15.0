@@ -59,6 +59,7 @@ typedef MinimalTupleData *MinimalTuple;
  * a disk buffer, or if it represents a copy of a tuple on disk.  They
  * should be explicitly set invalid in manufactured tuples.
  */
+// Heap(还有一种是Index)类型Tuple的头部数据，在Page结构中已做详细分析
 typedef struct HeapTupleData
 {
 	uint32		t_len;			/* length of *t_data */

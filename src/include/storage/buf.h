@@ -20,6 +20,7 @@
  * Zero is invalid, positive is the index of a shared buffer (1..NBuffers),
  * negative is the index of a local buffer (-1 .. -NLocBuffer).
  */
+//实际类型为整型，共享缓冲区的index， 0为非法buffer, 小于0为本地buffer
 typedef int Buffer;
 
 #define InvalidBuffer	0

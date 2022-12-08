@@ -32,19 +32,28 @@
  *
  * Note - caller must hold BUFFER_LOCK_EXCLUSIVE on the buffer.
  */
+/*
+  RelationPutHeapTuple 函数：
+  输入：
+    relation-数据表
+	Buffer-待插入数据的所在页
+	HeapTuple-待插入的数据
+	token-是否?的标记
+ */
 void
 RelationPutHeapTuple(Relation relation,
 					 Buffer buffer,
 					 HeapTuple tuple,
 					 bool token)
 {
-	Page		pageHeader;
-	OffsetNumber offnum;
+	Page		pageHeader; //行头
+	OffsetNumber offnum;    //行偏移
 
 	/*
 	 * A tuple that's being inserted speculatively should already have its
 	 * token set.
 	 */
+	// TODO token & speculatively 有待考究
 	Assert(!token || HeapTupleHeaderIsSpeculative(tuple->t_data));
 
 	/*
@@ -57,15 +66,20 @@ RelationPutHeapTuple(Relation relation,
 			 (tuple->t_data->t_infomask & HEAP_XMAX_IS_MULTI)));
 
 	/* Add the tuple to the page */
+	//根据buffer获取相应的page(页头)
 	pageHeader = BufferGetPage(buffer);
 
+	//调用具体的插入数据函数
 	offnum = PageAddItem(pageHeader, (Item) tuple->t_data,
 						 tuple->t_len, InvalidOffsetNumber, false, true);
 
+	// 如果不成功，记录日志
 	if (offnum == InvalidOffsetNumber)
 		elog(PANIC, "failed to add tuple to page");
 
 	/* Update tuple->t_self to the actual position where it was stored */
+	// &(tuple->t_self)类型为ItemPointer, 也即行指针(ItemPinterData结构体指针)
+	// 根据Buffer获取块号， 把块号和行偏移写入行指针中
 	ItemPointerSet(&(tuple->t_self), BufferGetBlockNumber(buffer), offnum);
 
 	/*
@@ -75,9 +89,11 @@ RelationPutHeapTuple(Relation relation,
 	 */
 	if (!token)
 	{
+		// 获取行指针，ItemId即ItemIdData指针
 		ItemId		itemId = PageGetItemId(pageHeader, offnum);
+		// 获取TupleHeader
 		HeapTupleHeader item = (HeapTupleHeader) PageGetItem(pageHeader, itemId);
-
+		// 更新TupleHeader中的行指针
 		item->t_ctid = tuple->t_self;
 	}
 }
